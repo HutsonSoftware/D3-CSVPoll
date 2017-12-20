@@ -38,13 +38,6 @@ namespace HutSoft.D3.CSVPoll
             }
         }
 
-        public string NameValue
-        {
-            get
-            {
-                return string.Format("{0}{1}", Name, Value);
-            }
-        }
     }
 
     class PicklistComparer : IEqualityComparer<Picklist>
