@@ -30,6 +30,7 @@ namespace HutSoft.D3.CSVPoll
                             }
                         }
                     }
+                    con.Close();
                 }
             }
             catch (Exception ex)
@@ -39,30 +40,28 @@ namespace HutSoft.D3.CSVPoll
             return databases;
         }
 
-        internal List<string> GetValuesInCsvFile(string csvFile)
+        internal List<Picklist> GetValuesInCsvFile(string csvFile)
         {
             try
             {
                 if (csvFile == string.Empty) throw new Exception("Csv file must all be provided");
                 if (!File.Exists(csvFile)) throw new Exception("Csv file does not exist");
-                List<string> csvValues = new List<string>();
+                List<Picklist> csvValues = new List<Picklist>();
                 using (var reader = new StreamReader(csvFile))
                 {
                     while (!reader.EndOfStream)
                     {
                         var line = reader.ReadLine();
                         var values = line.Split(',');
-                        csvValues.Add(values[0]);
+                        Picklist picklist = new Picklist(values[1], values[0]);
+                        csvValues.Add(picklist);
                     }
                     csvValues.RemoveAt(0);
                 }
-                for (int i = 0; i < csvValues.Count; i++)
-                {
-                    csvValues[i] = csvValues[i].Replace("\"", "");
-                }
-                csvValues.RemoveAll(x => x == "");
-                csvValues = csvValues.Where(s => !string.IsNullOrWhiteSpace(s)).Distinct().ToList();
-                csvValues.Sort();
+                csvValues.RemoveAll(x => x.Value == "");
+                csvValues = csvValues.Where(s => !string.IsNullOrWhiteSpace(s.Value)).ToList();
+                csvValues = csvValues.Distinct(new PicklistComparer()).ToList();
+                csvValues = csvValues.OrderBy(x => x.Name).ThenBy(x => x.Value).ToList();
                 return csvValues;
             }
             catch (Exception ex)
@@ -71,10 +70,10 @@ namespace HutSoft.D3.CSVPoll
             }
         }
 
-        internal List<string> GetValuesInDb(string serverInstance, string database)
+        internal List<Picklist> GetValuesInDb(string serverInstance, string database)
         {
-            List<string> existingValuesInDb = new List<string>();
-            string sql = "SELECT b.PicklistValue FROM PnPPicklists a LEFT JOIN PnPPicklistValues b ON a.PnPID = b.PicklistId WHERE a.PicklistName = 'Part_Number'";
+            List<Picklist> existingValuesInDb = new List<Picklist>();
+            string sql = "SELECT a.PicklistName, b.PicklistValue FROM PnPPicklists a LEFT JOIN PnPPicklistValues b ON a.PnPID = b.PicklistId";
             try
             {
                 string connectionString = GetConnectionString(serverInstance, database);
@@ -87,10 +86,12 @@ namespace HutSoft.D3.CSVPoll
                         {
                             while (dr.Read())
                             {
-                                existingValuesInDb.Add(dr[0].ToString());
+                                Picklist picklist = new Picklist(dr["PicklistName"].ToString(), dr["PicklistValue"].ToString());
+                                existingValuesInDb.Add(picklist);
                             }
                         }
                     }
+                    con.Close();
                 }
                 return existingValuesInDb;
             }
@@ -102,59 +103,67 @@ namespace HutSoft.D3.CSVPoll
         
         internal void ImportCsvValuesToDB(string csvFile, string serverInstance, string database)
         {
-            List<string> csvValues = GetValuesInCsvFile(csvFile);
-            List<string> existingValuesInDb = GetValuesInDb(serverInstance, database);
-            List<string> newCsvValues = csvValues.Except(existingValuesInDb, StringComparer.OrdinalIgnoreCase).ToList<string>();
+            List<Picklist> csvValues = GetValuesInCsvFile(csvFile);
+            List<Picklist> existingValuesInDb = GetValuesInDb(serverInstance, database);
+
+            List<Picklist> newCsvValues = csvValues.Except(existingValuesInDb, new PicklistComparer()).ToList<Picklist>();
+
             AddNewValuesToDb(serverInstance, database, newCsvValues);
         }
 
-        internal void AddNewValuesToDb(string serverInstance, string database, List<string> valuesToBeInserted)
+        internal void AddNewValuesToDb(string serverInstance, string database, List<Picklist> picklistsToBeInserted)
         {
             try
             {
+                string sqlGetPnPID = "SELECT PnPID FROM PnPPicklists WHERE PicklistName = '{0}'";
+                string sqlInsertPnPPicklists = "INSERT INTO PnPPicklists (DisplayName, PicklistName, PicklistType, PnPID) VALUES ('', '{0}', 'Regular', {1})";
+
+                string sqlGetNextPnPID = "SELECT MAX(PnPID)+1 FROM PnPBase";
+                string sqlInsertPnPBase = "INSERT INTO PnPBase (PnPClassName, PnPID) VALUES ('{0}', {1})";
+
+                string sqlInsertPnPPicklistValues = "INSERT INTO PnPPicklistValues (PicklistId, PicklistValue, PnPID) VALUES ({0}, '{1}', {2})";
+
                 string connectionString = GetConnectionString(serverInstance, database);
+
                 using (SqlConnection con = new SqlConnection(connectionString))
                 {
                     con.Open();
 
-                    int pnPID;
-
-                    string sqlGetPnPID = "SELECT PnPID FROM PnPPicklists WHERE PicklistName = 'Part_Number'";
-                    using (SqlCommand cmdGetPnPID = new SqlCommand(sqlGetPnPID, con))
+                    foreach (Picklist picklist in picklistsToBeInserted)
                     {
-                        pnPID = Convert.ToInt32(cmdGetPnPID.ExecuteScalar());
-                    }
+                        int pnPID = 0;
+                        int nextPnPID = 0;
+                        
+                        using (SqlCommand cmdGetPnPID = new SqlCommand(string.Format(sqlGetPnPID, picklist.Name), con))
+                        {
+                            object obj = cmdGetPnPID.ExecuteScalar();
+                            if (obj != null)  //picklist.Name may not exist in PnPPicklists
+                                pnPID = Convert.ToInt32(obj);
+                        }
 
-                    foreach (string value in valuesToBeInserted)
-                    {
-                        int nextPnPID;
+                        if (pnPID == 0) //picklist.Name doesn't exist in PnPPicklists, so add it
+                        {
+                            using (SqlCommand cmdGetNextPnPID = new SqlCommand(sqlGetNextPnPID, con))
+                                nextPnPID = Convert.ToInt32(cmdGetNextPnPID.ExecuteScalar());
 
-                        string sqlGetNextPnPID = "SELECT MAX(PnPID)+1 FROM PnPBase";
+                            using (SqlCommand cmdInsertPnPBase = new SqlCommand(string.Format(sqlInsertPnPBase, "PnPPicklists", nextPnPID), con))
+                                cmdInsertPnPBase.ExecuteNonQuery();
+
+                            using (SqlCommand cmdInsertPnPPicklistValues = new SqlCommand(string.Format(sqlInsertPnPPicklists, picklist.Name, nextPnPID), con))
+                                cmdInsertPnPPicklistValues.ExecuteNonQuery();
+
+                           
+                            pnPID = nextPnPID;
+                        }
+
                         using (SqlCommand cmdGetNextPnPID = new SqlCommand(sqlGetNextPnPID, con))
-                        {
                             nextPnPID = Convert.ToInt32(cmdGetNextPnPID.ExecuteScalar());
-                        }
 
-                        string sqlInsertPnPPicklistValues =
-                            string.Format(
-                                "INSERT INTO PnPPicklistValues (PicklistId, PicklistValue, PnPID) VALUES ({0}, '{1}', {2})",
-                                pnPID,
-                                value,
-                                nextPnPID);
-                        using (SqlCommand cmdInsertPnPPicklistValues = new SqlCommand(sqlInsertPnPPicklistValues, con))
-                        {
-                            cmdInsertPnPPicklistValues.ExecuteNonQuery();
-                        }
-
-                        string sqlInsertPnPBase =
-                            string.Format(
-                                "INSERT INTO PnPBase (PnPClassName, PnPID) VALUES ('{0}', {1})",
-                                "PnPPicklistValues",
-                                nextPnPID);
-                        using (SqlCommand cmdInsertPnPBase = new SqlCommand(sqlInsertPnPBase, con))
-                        {
+                        using (SqlCommand cmdInsertPnPBase = new SqlCommand(string.Format(sqlInsertPnPBase, "PnPPicklistValues", nextPnPID), con))
                             cmdInsertPnPBase.ExecuteNonQuery();
-                        }
+
+                        using (SqlCommand cmdInsertPnPPicklistValues = new SqlCommand(string.Format(sqlInsertPnPPicklistValues, pnPID, picklist.Value, nextPnPID), con))
+                            cmdInsertPnPPicklistValues.ExecuteNonQuery();
                     }
                     con.Close();
                 }

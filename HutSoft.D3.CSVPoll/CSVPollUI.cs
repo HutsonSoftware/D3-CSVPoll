@@ -1,8 +1,5 @@
 ﻿using System;
 using System.Collections.Generic;
-using System.Data;
-using System.Data.SqlClient;
-using System.IO;
 using System.Linq;
 using System.Windows.Forms;
 
@@ -66,14 +63,11 @@ namespace HutSoft.D3.CSVPoll
             openFileDialog1.RestoreDirectory = true;
 
             if (openFileDialog1.ShowDialog() == DialogResult.OK)
-            {
                 txtCsvFile.Text = openFileDialog1.FileName;
-            }
         }
 
         private void btnRefreshDatabases_Click(object sender, EventArgs e)
         {
-
             try
             {
                 btnRefreshDatabases.Enabled = false;
@@ -100,14 +94,24 @@ namespace HutSoft.D3.CSVPoll
         {
             try
             {
+                lstExistingCsvEntries.Items.Clear();
+                lstNewCsvEntries.Items.Clear();
+
                 btnPreview.Enabled = false;
-                List<string> csvValues = new List<string>();
+                List<Picklist> csvValues = new List<Picklist>();
                 csvValues = _csvPollBO.GetValuesInCsvFile(txtCsvFile.Text);
                 if (csvValues.Count > 0)
                 {
-                    List<string> existingValuesInDb = _csvPollBO.GetValuesInDb(txtServerInstance.Text, cboAvailableDatabases.Text);
-                    lstExistingCsvEntries.DataSource = csvValues.Intersect(existingValuesInDb, StringComparer.OrdinalIgnoreCase).ToList<string>();
-                    lstNewCsvEntries.DataSource = csvValues.Except(existingValuesInDb, StringComparer.OrdinalIgnoreCase).ToList<string>();
+                    List<Picklist> existingValuesInDb = _csvPollBO.GetValuesInDb(txtServerInstance.Text, cboAvailableDatabases.Text);
+
+                    List<Picklist> existingCsvValues = csvValues.Intersect(existingValuesInDb, new PicklistComparer()).ToList<Picklist>();
+                    List<Picklist> newCsvValues = csvValues.Except(existingValuesInDb, new PicklistComparer()).ToList<Picklist>();
+
+                    foreach (Picklist picklist in existingCsvValues)
+                        lstExistingCsvEntries.Items.AddRange(new object[] { string.Format("{0}, {1}", picklist.Name, picklist.Value) });
+
+                    foreach (Picklist picklist in newCsvValues)
+                        lstNewCsvEntries.Items.AddRange(new object[] { string.Format("{0}, {1}", picklist.Name, picklist.Value) });
                 }
             }
             catch (Exception ex)
@@ -126,10 +130,6 @@ namespace HutSoft.D3.CSVPoll
             {
                 btnImport.Enabled = false;
                 _csvPollBO.ImportCsvValuesToDB(txtCsvFile.Text, txtServerInstance.Text, cboAvailableDatabases.Text);
-                List<string> csvValues = _csvPollBO.GetValuesInCsvFile(txtCsvFile.Text);
-                List<string> existingValuesInDb = _csvPollBO.GetValuesInDb(txtServerInstance.Text, cboAvailableDatabases.Text);
-                List<string> newCsvValues = csvValues.Except(existingValuesInDb, StringComparer.OrdinalIgnoreCase).ToList<string>();
-                _csvPollBO.AddNewValuesToDb(txtServerInstance.Text, cboAvailableDatabases.Text, newCsvValues);
             }
             catch (Exception ex)
             {
